@@ -1,295 +1,150 @@
 package main
 
 import (
+	"math"
 	"fmt"
 	"image"
 	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
-	"math"
 	"os"
-	"sort"
 
 	"github.com/llgcode/draw2d/draw2dimg"
 )
 
-func getColor(x int, y int, img image.Image) float64 {
-	r, g, b, _ := img.At(x, y).RGBA()
-	smallR := float64(r>>12) * 16
-	smallG := float64(g>>12) * 16
-	smallB := float64(b>>12) * 16
-
-	return (smallR + smallG + smallB) / 3.0 / 255
+func getRed(x int, y int, img image.Image) int {
+	r, _, _, _ := img.At(x, y).RGBA()
+	return int(r >> 8)
 }
 
-func getColorGreenRed(x int, y int, img image.Image) float64 {
-	r, g, _, _ := img.At(x, y).RGBA()
-	smallR := float64(r >> 8)
-	smallG := float64(g >> 8)
-
-	return (smallG - smallR) / 255
+func getGreen(x int, y int, img image.Image) int {
+	_, g, _, _ := img.At(x, y).RGBA()
+	return int(g >> 8)
 }
 
-func getPart(img image.Image, x int, y int) [5][5]float64 {
-	return [5][5]float64{
-		[5]float64{getColor(x-2, y-2, img), getColor(x-1, y-2, img), getColor(x, y-2, img), getColor(x+1, y-2, img), getColor(x+2, y-2, img)},
-		[5]float64{getColor(x-2, y-1, img), getColor(x-1, y-1, img), getColor(x, y-1, img), getColor(x+1, y-1, img), getColor(x+2, y-1, img)},
-		[5]float64{getColor(x-2, y, img), getColor(x-1, y, img), getColor(x, y, img), getColor(x+1, y, img), getColor(x+2, y, img)},
-		[5]float64{getColor(x-2, y+1, img), getColor(x-1, y+1, img), getColor(x, y+1, img), getColor(x+1, y+1, img), getColor(x+2, y+1, img)},
-		[5]float64{getColor(x-2, y+2, img), getColor(x-1, y+2, img), getColor(x, y+2, img), getColor(x+1, y+2, img), getColor(x+2, y+2, img)},
-	}
-}
-func getPartGreenRed(img image.Image, x int, y int) [5][5]float64 {
-	return [5][5]float64{
-		[5]float64{getColorGreenRed(x-2, y-2, img), getColorGreenRed(x-1, y-2, img), getColorGreenRed(x, y-2, img), getColorGreenRed(x+1, y-2, img), getColorGreenRed(x+2, y-2, img)},
-		[5]float64{getColorGreenRed(x-2, y-1, img), getColorGreenRed(x-1, y-1, img), getColorGreenRed(x, y-1, img), getColorGreenRed(x+1, y-1, img), getColorGreenRed(x+2, y-1, img)},
-		[5]float64{getColorGreenRed(x-2, y, img), getColorGreenRed(x-1, y, img), getColorGreenRed(x, y, img), getColorGreenRed(x+1, y, img), getColorGreenRed(x+2, y, img)},
-		[5]float64{getColorGreenRed(x-2, y+1, img), getColorGreenRed(x-1, y+1, img), getColorGreenRed(x, y+1, img), getColorGreenRed(x+1, y+1, img), getColorGreenRed(x+2, y+1, img)},
-		[5]float64{getColorGreenRed(x-2, y+2, img), getColorGreenRed(x-1, y+2, img), getColorGreenRed(x, y+2, img), getColorGreenRed(x+1, y+2, img), getColorGreenRed(x+2, y+2, img)},
-	}
+func getBlue(x int, y int, img image.Image) int {
+	_, _, b, _ := img.At(x, y).RGBA()
+	return int(b >> 8)
 }
 
-func getMedian(block [5][5]float64) float64 {
-	var flatten = make([]float64, 25)
+const blockWidth = 5
+const blockHeight = 5
+const blockLength = blockWidth * blockHeight
+const stepX = blockWidth >> 1
+const stepY = blockHeight >> 1
 
-	for i := 0; i < len(block); i++ {
-		for j := 0; j < len(block[i]); j++ {
-			flatten[i*len(block)+j] = block[i][j]
-		}
-	}
-
-	sort.Float64s(flatten)
-
-	return flatten[12]
-}
-
-func calc(part [5][5]float64, coefs [5][5]float64) float64 {
-	sum := float64(0)
-	for i := 0; i < len(part); i++ {
-		for j := 0; j < len(part[i]); j++ {
-			sum += (part[i][j] - part[2][2]) * coefs[i][j]
-		}
-	}
-	return 1 / (1 + math.Exp(-sum))
-
-}
-func calcComparison(part [5][5]float64, coefs [5][5]float64, pattern [5][5]float64) float64 {
-	sum := float64(0)
-	for i := 0; i < len(part); i++ {
-		for j := 0; j < len(part[i]); j++ {
-			sum += (part[i][j] - pattern[i][j]) * coefs[i][j]
-		}
-	}
-	return 1 / (1 + math.Exp(-sum))
-}
-
-func probColor(probability float64) color.Color {
-	return color.Gray{uint8(probability * 255)}
-}
-
-func reduce(img *image.RGBA) image.Image {
-	bounds := img.Bounds()
-	// 	0  0  0  0  0
-	// 	0  0  0  0  0
-	// 	0  0  X  0  0
-	// 	0  0  0  0  0
-	// 	0  0  0  0  0
-	newImage := image.NewRGBA(bounds)
-
-	for x := bounds.Min.X + 2; x < bounds.Max.X-2; x++ {
-		for y := bounds.Min.Y + 2; y < bounds.Max.Y-2; y++ {
-			part := getPartGreenRed(img, x, y)
-
-			probability := calcComparison(part, [5][5]float64{
-				[5]float64{1, 1, 1, 1, 1},
-				[5]float64{1, 1, 1, 1, 1},
-				[5]float64{1, 1, 1, 1, 1},
-				[5]float64{1, 1, 1, 1, 1},
-				[5]float64{1, 1, 1, 1, 1},
-			}, [5][5]float64{
-				[5]float64{1, 1, 1, 1, 1},
-				[5]float64{0, 0, 0, 0, 0},
-				[5]float64{0, 0, 0, 0, 0},
-				[5]float64{0, 0, 0, 0, 0},
-				[5]float64{0, 0, 0, 0, 0},
-			})
-
-			newImage.Set(x, y, probColor(probability))
-		}
-	}
-
-	return newImage
-}
-
-func getIntervals(p image.Image) [][4]int {
-	b := p.Bounds()
-	res := make([][4]int, 0)
-	for x := b.Min.X + 2; x < b.Max.X-2; x++ {
-		for y := b.Min.Y + 2; y < b.Max.Y-2; y++ {
-			leftProb := getColor(x-1, y, p)
-			topProb := getColor(x, y+1, p)
-			currentProb := getColor(x, y, p)
-			if currentProb > 0.90 && leftProb < 0.5 && topProb < 0.5 {
-				startX := x
-				startY := y
-				endX := startX + 1
-
-				for getColor(endX, startY, p) > 0.8 {
-					endX++
-				}
-
-				if (endX - startX) < 15 {
-					continue
-				}
-
-				res = append(res, [4]int{startX, startY, endX, startY})
-			}
-		}
-	}
-
-	return res
-}
-
-func getIntervalsLengths(intervals [][4]int) []int {
-	res := make([]int, 0)
-
-	for _, interval := range intervals {
-		res = append(res, interval[2]-interval[0])
-	}
-
-	return res
-}
-
-func getCellCenters(intervals [][4]int, img image.Image) [][2]int {
-	points := make([][2]int, 0)
-
-	maxIntervalIndex := 0
-	step := intervals[0][2] - intervals[0][0]
-
-	for index, interval := range intervals[1:] {
-		length := interval[2] - interval[0]
-		if length > step {
-			step = length
-			maxIntervalIndex = index
-		}
-	}
-
-	maxInterval := intervals[maxIntervalIndex]
-	maxIntervalCenter := [2]int{maxInterval[0] + (step >> 1), maxInterval[1] + (step >> 1)}
-	centerColor := getColor(maxIntervalCenter[0], maxIntervalCenter[1], img)
-
-	leftTopCorner := [2]int{maxIntervalCenter[0] % step, maxIntervalCenter[1] % step}
-
-	bounds := img.Bounds()
-
-	for x := leftTopCorner[1]; x < bounds.Max.X; x += step {
-		for y := leftTopCorner[0]; y < bounds.Max.Y; y += step {
+func getPart(getColor func(int,int,image.Image) int, centerX int, centerY int, img image.Image) (res []int) {
+	for x := centerX - stepX; x < centerX + stepX; x++ {
+		for y := centerY - stepY; y < centerY + stepY; y++ {
 			color := getColor(x, y, img)
-			if math.Abs(color-centerColor) < 0.1 {
-				points = append(points, [2]int{x, y})
-			}
+			res = append(res, color)
+		}
+	}
+	return
+}
+
+func getK(numbers []int, k int) int {
+	
+	if (len(numbers) == 1) {
+		return numbers[0]
+	}
+	
+	less := make([]int, 0)
+	equal := make([]int, 0)
+	more := make([]int, 0)
+	
+	pivot := numbers[len(numbers) >> 1]
+	
+
+	for _, value := range numbers {
+		if value > pivot {
+			more = append(more, value)
+		} else if value < pivot {
+			less = append(less, value)
+		} else {
+			equal = append(equal, value)
 		}
 	}
 
-	return points
+	if k < len(less) {
+		return getK(less, k)
+	}
+
+	if k < len(less) + len(equal) {
+		return pivot
+	}
+
+	return getK(more, k - len(less) - len(equal))
+	
 }
+
+func meanQuadraticDifference(numbers []int) int {
+	median := getK(numbers, len(numbers) >> 1)
+
+	sum := 0
+
+	for _, value := range numbers {
+		sum += (value - median) * (value - median)
+	}
+
+	divisor := 1
+
+	if len(numbers) > 1 {
+		divisor = len(numbers) - 1
+	}
+
+	return int(math.Round(math.Sqrt(float64(sum) / float64(divisor))))
+}
+
 
 func getResultImage(img image.Image) image.Image {
 	bounds := img.Bounds()
 
+	topLeftX := bounds.Min.X
+	topLeftY := bounds.Min.Y
+	botRightX := bounds.Max.X
+	botRightY := bounds.Max.Y
+
 	newImage := image.NewRGBA(bounds)
 
-	// Set color for each pixel.
-	for x := bounds.Min.X; x < bounds.Max.X; x++ {
-		for y := bounds.Min.Y; y < bounds.Max.Y>>1; y++ {
-			if x > bounds.Min.X+2 && x < bounds.Max.X-2 && y < bounds.Max.Y-2 && y > bounds.Min.Y+2 {
-				part := getPart(img, x, y)
+	max := 0
 
-				median := getMedian(part)
+	for y := topLeftY + stepY; y < botRightY - stepY; y++ {
+		for x := topLeftX + stepX; x < botRightX - stepX; x++ {
+			redPart := getPart(getRed, x, y, img)
+			bluePart := getPart(getBlue, x, y, img)
+			greenPart := getPart(getGreen, x, y, img)
 
-				newImage.Set(x, y, color.Gray{uint8(median * 255)})
-			} else {
-				newImage.Set(x, y, img.At(x, y))
+			meanQuadraticDifference := meanQuadraticDifference(redPart) + meanQuadraticDifference(greenPart) + meanQuadraticDifference(bluePart)
+
+			if (meanQuadraticDifference > max) {
+				max = meanQuadraticDifference
 			}
 		}
 	}
+	for y := topLeftY + stepY; y < botRightY - stepY; y++ {
+		for x := topLeftX + stepX; x < botRightX - stepX; x++ {
+			redPart := getPart(getRed, x, y, img)
+			bluePart := getPart(getBlue, x, y, img)
+			greenPart := getPart(getGreen, x, y, img)
 
-	for x := bounds.Min.X + 2; x < bounds.Max.X-2; x++ {
-		for y := bounds.Min.Y + 2; y < bounds.Max.Y-2; y++ {
-			part := getPart(img, x, y)
-			// topRight := [5][5]float64{
-			// 	[5]float64{0.0, -31.0, 4.0, 2.0, 1.0},
-			// 	[5]float64{0.0, -31.0, 8.0, 4.0, 2.0},
-			// 	[5]float64{0.0, -31.0, 32.0, 16.0, 8.0},
-			// 	[5]float64{0.0, -31.0, -31.0, -31.0, -31.0},
-			// 	[5]float64{0.0, 0.0, 0.0, 0.0, 0.0},
-			// } highlights letters
+			meanQuadraticDifference := meanQuadraticDifference(redPart) + meanQuadraticDifference(greenPart) + meanQuadraticDifference(bluePart)
+			c := meanQuadraticDifference * 255 / max
 
-			rvalue := calc(part, [5][5]float64{
-				[5]float64{-3, -3, 1, 2, 3},
-				[5]float64{-3, -3, 1, 2, 3},
-				[5]float64{-3, -3, 1, 2, 3},
-				[5]float64{-3, -3, 1, 2, 3},
-				[5]float64{-3, -3, 1, 2, 3},
-			})
-			gvalue := calc(part, [5][5]float64{
-				[5]float64{-3, -3, -3, -3, -3},
-				[5]float64{-3, -3, -3, -3, -3},
-				[5]float64{1, 1, 1, 1, 1},
-				[5]float64{2, 2, 2, 2, 2},
-				[5]float64{3, 3, 3, 3, 3},
-			})
-
-			r := uint8(rvalue * 255)
-			g := uint8(gvalue * 255)
-			b := uint8(0)
-			const threshold = 250
-			if r > threshold {
-				r = 255
-			} else {
-				r = 0
-			}
-			if g > threshold {
-				g = 255
-			} else {
-				g = 0
+			if c < 100 {
+				c = 0
+			} else  {
+				c = 255
 			}
 
-			newImage.Set(x, y, color.RGBA{r, g, b, 255})
+			newImage.Set(x, y, color.Gray{uint8(c)})
 		}
 	}
 
-	probabilities := reduce(newImage)
+	fmt.Println(max)
 
-	intervals := getIntervals(probabilities)
-
-	dots := getCellCenters(intervals, img)
-
-	fmt.Println(dots)
-
-	resImage := image.NewRGBA(bounds)
-
-	for x := bounds.Min.X; x < bounds.Max.X; x++ {
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			resImage.Set(x, y, img.At(x, y))
-		}
-	}
-
-	gc := draw2dimg.NewGraphicContext(resImage)
-	gc.SetStrokeColor(color.RGBA{255, 0, 0, 255})
-	gc.SetLineWidth(3)
-	gc.BeginPath()
-	for _, center := range dots {
-		gc.MoveTo(float64(center[0]-5), float64(center[1]))
-		gc.LineTo(float64(center[0]+5), float64(center[1]))
-		gc.MoveTo(float64(center[0]), float64(center[1]-5))
-		gc.LineTo(float64(center[0]), float64(center[1]+5))
-	}
-	gc.Stroke()
-	gc.Close()
-	fmt.Println(getIntervalsLengths(intervals))
-	return resImage
+	return newImage
 }
 
 func main() {
